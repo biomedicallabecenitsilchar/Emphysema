@@ -1,0 +1,125 @@
+import numpy as np
+import os
+from imblearn.over_sampling import BorderlineSMOTE
+from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier, StackingClassifier
+from sklearn.decomposition import PCA
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
+from sklearn.linear_model import LogisticRegression
+import matplotlib.pyplot as plt
+import seaborn as sns
+from collections import Counter
+
+# Define path to HOG feature datasets
+hog_feature_folder = '/content/drive/MyDrive/HOG_FEATURES'
+
+# Load training, testing, and validation data
+X_train = np.load(os.path.join(hog_feature_folder, 'X_train.npy'))
+y_train = np.load(os.path.join(hog_feature_folder, 'y_train.npy'))
+X_test = np.load(os.path.join(hog_feature_folder, 'X_test.npy'))
+y_test = np.load(os.path.join(hog_feature_folder, 'y_test.npy'))
+X_val = np.load(os.path.join(hog_feature_folder, 'X_val.npy'))
+y_val = np.load(os.path.join(hog_feature_folder, 'y_val.npy'))
+
+print("Data successfully loaded!")
+print(f"Training set size: {X_train.shape}, Labels: {y_train.shape}")
+print(f"Testing set size: {X_test.shape}, Labels: {y_test.shape}")
+print(f"Validation set size: {X_val.shape}, Labels: {y_val.shape}")
+
+# Balance testing dataset using BorderlineSMOTE
+print("Balancing the testing dataset with BorderlineSMOTE...")
+smote = BorderlineSMOTE(random_state=42, kind='borderline-1')
+X_test_balanced, y_test_balanced = smote.fit_resample(X_test, y_test)
+print(f"Balanced Testing set size: {X_test_balanced.shape}, Labels: {y_test_balanced.shape}")
+print("Label distribution in balanced test set:", Counter(y_test_balanced))
+
+# Apply PCA for dimensionality reduction
+n_components = 150
+print(f"Applying PCA with {n_components} components...")
+pca = PCA(n_components=n_components)
+X_train_pca = pca.fit_transform(X_train)
+X_test_balanced_pca = pca.transform(X_test_balanced)
+X_val_pca = pca.transform(X_val)
+
+print(f"PCA transformation complete. New training set size: {X_train_pca.shape}")
+print(f"Explained variance ratio by PCA: {sum(pca.explained_variance_ratio_):.4f}")
+
+# Initialize base classifiers
+svm_clf = SVC(kernel='rbf', probability=True, random_state=42, class_weight='balanced')
+rf_clf = RandomForestClassifier(n_estimators=200, random_state=42, class_weight='balanced', max_depth=20)
+
+# Hyperparameter tuning for SVC
+param_grid_svm = {
+    'C': [0.1, 1, 10],
+    'gamma': [0.001, 0.01, 0.1]
+}
+print("Tuning hyperparameters for SVC...")
+svm_tuned = GridSearchCV(svm_clf, param_grid_svm, cv=3, scoring='accuracy')
+svm_tuned.fit(X_train_pca, y_train)
+print(f"Best parameters for SVM: {svm_tuned.best_params_}")
+
+# Hyperparameter tuning for RandomForest
+param_grid_rf = {
+    'n_estimators': [100, 200, 300],
+    'max_depth': [10, 20, 30]
+}
+print("Tuning hyperparameters for Random Forest...")
+rf_tuned = GridSearchCV(rf_clf, param_grid_rf, cv=3, scoring='accuracy')
+rf_tuned.fit(X_train_pca, y_train)
+print(f"Best parameters for Random Forest: {rf_tuned.best_params_}")
+
+# Create stacking ensemble with tuned models
+print("Training the Stacking Classifier...")
+stacking_clf = StackingClassifier(
+    estimators=[('svm', svm_tuned.best_estimator_), ('rf', rf_tuned.best_estimator_)],
+    final_estimator=LogisticRegression(class_weight='balanced')
+)
+stacking_clf.fit(X_train_pca, y_train)
+
+# Evaluate model on validation set
+val_accuracy = stacking_clf.score(X_val_pca, y_val)
+print(f"Validation Accuracy: {val_accuracy:.4f}")
+
+# Evaluate model on balanced testing set
+y_test_balanced_pred = stacking_clf.predict(X_test_balanced_pca)
+test_balanced_accuracy = accuracy_score(y_test_balanced, y_test_balanced_pred)
+
+# Define desired label order
+desired_order = ['Normal', 'CLE', 'PLE', 'PSE']
+
+# Compute confusion matrix with reordered labels
+conf_matrix_balanced = confusion_matrix(
+    y_test_balanced,
+    y_test_balanced_pred,
+    labels=desired_order
+)
+
+# Generate classification report with reordered labels
+class_report_balanced = classification_report(
+    y_test_balanced,
+    y_test_balanced_pred,
+    labels=desired_order
+)
+
+# Print evaluation metrics
+print(f"Testing Accuracy (Balanced): {test_balanced_accuracy:.4f}")
+print("\nConfusion Matrix (Balanced):")
+print(conf_matrix_balanced)
+print("\nClassification Report (Balanced):")
+print(class_report_balanced)
+
+# Plot confusion matrix with reordered labels
+plt.figure(figsize=(8, 6))
+sns.heatmap(
+    conf_matrix_balanced,
+    annot=True,
+    fmt='d',
+    cmap='Blues',
+    xticklabels=desired_order,
+    yticklabels=desired_order
+)
+plt.title("Confusion Matrix (Balanced Test Set)")
+plt.xlabel("Predicted")
+plt.ylabel("Actual")
+plt.savefig('confusion_matrix_balanced.png')
