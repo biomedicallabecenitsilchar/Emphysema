@@ -1,0 +1,74 @@
+import cv2
+import numpy as np
+import os
+from skimage.segmentation import clear_border
+from tqdm import tqdm
+from google.colab.patches import cv2_imshow
+
+# Define dataset paths
+dataset_path = '/content/drive/MyDrive/DATASET'
+output_path = '/content/drive/MyDrive/Pre-processed Images'
+os.makedirs(output_path, exist_ok=True)
+
+# Define constants
+MIN_HU = -1100  # Minimum Hounsfield Unit
+MAX_HU = -400   # Maximum Hounsfield Unit
+
+def process_image(image_path, output_file_path):
+    # Step 1: Load Image (grayscale)
+    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    if image is None:
+        print(f"Error: Unable to load image at {image_path}")
+        return None
+    print(f"Loaded image: {image_path}, shape: {image.shape}")
+
+    # Step 2: Noise Reduction using Gaussian Filter
+    gaussian_filtered = cv2.GaussianBlur(image, (5, 5), 0)
+
+    # Step 3: Lung Segmentation using Thresholding
+    _, binary_mask = cv2.threshold(gaussian_filtered, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    binary_mask = binary_mask.astype(np.uint8)
+    cleared_mask = clear_border(binary_mask)  # Remove small artifacts touching image border
+
+    # Step 4: Hounsfield Unit Mapping
+    lung_mean = np.mean(gaussian_filtered[cleared_mask > 0])  # Mean HU value within lung region
+    segmented_image = np.where(cleared_mask > 0, gaussian_filtered, lung_mean)
+
+    # Step 5: Thresholding for Emphysema Detection
+    emphysema_mask = (segmented_image < -950).astype(np.uint8) * 255
+
+    # Step 6: Edge Detection using Canny Edge Detector
+    edges = cv2.Canny(emphysema_mask, 50, 150)
+
+    # Step 7: Morphological Operations and Normalization
+    kernel = np.ones((5, 5), np.uint8)
+    morphed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+    normalized = np.clip(segmented_image, MIN_HU, MAX_HU)
+    normalized = (normalized - MIN_HU) / (MAX_HU - MIN_HU) * 255
+    normalized = normalized.astype(np.uint8)
+
+    # Combine edges with normalized lung region
+    final_image = cv2.bitwise_and(normalized, normalized, mask=cleared_mask)
+
+    # Display the processed image (for verification)
+    cv2_imshow(final_image)
+
+    # Save the processed image
+    cv2.imwrite(output_file_path, final_image)
+    print(f"Saved processed image: {output_file_path}")
+
+# Process all images in each category
+categories = ['Normal', 'CLE', 'PLE', 'PSE']
+for category in categories:
+    category_path = os.path.join(dataset_path, category)
+    output_category_path = os.path.join(output_path, category)
+    os.makedirs(output_category_path, exist_ok=True)
+
+    print(f"Processing category: {category}")
+    for filename in tqdm(os.listdir(category_path)):
+        if filename.lower().endswith(('.jpeg', '.jpg', '.png')):
+            image_path = os.path.join(category_path, filename)
+            output_file_path = os.path.join(output_category_path, filename.replace('.jpg', '_processed.png').replace('.jpeg', '_processed.png'))
+            process_image(image_path, output_file_path)
+
+print("Processing complete. All images are saved successfully.")
